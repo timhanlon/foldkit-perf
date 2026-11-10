@@ -65,10 +65,10 @@ went from a 34ms median, with 3 in 10 over 50ms, to 17ms (one 60Hz frame).
 
 ## Proposed fix
 
-Keep one call site per boundary id across renders, and format the frames only when
-the error message interpolates them. Duplicate detection (`seenThisRender`) is
-unchanged, and the error still names both registrations. `?duplicate=1` shows the
-same message in both modes.
+Keep one call site per boundary id across renders, format the frames only when the
+error message interpolates them, and drop the entry when the slot's wrap is
+deregistered. Duplicate detection (`seenThisRender`) is unchanged, and the error
+still names both registrations. `?duplicate=1` shows the same message in both modes.
 
 ```diff
  export const createBoundaryRegistry = () => ({
@@ -96,7 +96,17 @@ same message in both modes.
 +    registry.callSites.set(boundaryId, callSite);
      writeBoundaryWrap(registry, boundaryId, descriptor, mountOuterDispatch, callSite);
  };
+ ...
+ export const deregisterBoundaryWrap = (registry, boundaryId, descriptor, mountOuterDispatch) => {
+     if (registry.wraps.get(boundaryId) === descriptor) {
+         registry.wraps.delete(boundaryId);
++        registry.callSites.delete(boundaryId);
 ```
+
+With that cleanup, the cache follows `registry.wraps` exactly: rendering 160 slots
+on alternate renders gives 160 → 0 → 160 entries in both. Without it, call sites of
+removed slots stay cached (bounded by the number of distinct slot ids seen). The
+`vite.config.ts` A/B here omits the cleanup; it only affects memory.
 
 Alternatives: capture only when `import.meta.hot` is set (the convention
 `duplicateIdScanner` already uses). That would make production free but leave
@@ -104,11 +114,20 @@ development slow. Or drop the first call site from the message.
 
 ## Related: call-site frame filter
 
-`captureCallSite` skips frames whose text includes `captureCallSite` or
-`at submodel`. In a minified build those names are mangled, so both "First/Second
-registration" lines point at the capture helper (`at XE (index-….js:98:430)`). In
-Node the frame reads `at Object.submodel`, which `at submodel` does not match. In
-both cases the message names foldkit internals instead of the caller.
+`captureCallSite` skips frames by function name (`captureCallSite`,
+`registerBoundaryWrap`, `at submodel`, …). The frame that remains is foldkit's own
+`h.submodel` builder method, which V8 prints as `at Object.submodel`, and that
+does not match `at submodel`. So the duplicate error never names the caller.
+`?duplicate=1` shows this with and without the fix:
+
+- development build: `at Object.submodel (…/foldkit/dist/html/index.js:2255:27)`
+- minified build: names are mangled, e.g. `at XE (index-….js:98:430)`
+- Node (renderToString): `at Object.submodel (…/foldkit/dist/html/index.js:2255:27)`
+
+`Error.captureStackTrace(error, fn)` omits `fn` and every frame above it, regardless
+of names or minification. It has to be given the outermost foldkit frame, the
+builder's `submodel` method, not `registerBoundaryWrap` (that only skips to the
+internal `submodel`). Support: Chrome, Node and Deno; Firefox 138+; Safari 17.2+.
 
 ## Files
 
