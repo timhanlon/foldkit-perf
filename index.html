@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>foldkit h.submodel stack capture</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 24px; max-width: 760px; }
+      pre { background: #f4f4f4; padding: 12px; white-space: pre-wrap; }
+      #root span { font-size: 0; }
+    </style>
+    <script>
+      // Runs before any module. Query parameters:
+      //   ?patched=1  apply the proposed fix (vite.config.ts) for an A/B
+      //   ?count=1    count Error constructions per render (the Proxy skews timings)
+      //   ?rows=N&depth=N&pad=N  slot count, nesting, extra call-stack frames
+      //   ?duplicate=1  repeat a slotId to show the error message
+      const params = new URLSearchParams(location.search);
+      globalThis.__FOLDKIT_CALLSITE_PATCH__ = params.get('patched') === '1';
+      window.__errors = 0;
+      if (params.has('count')) {
+        const NativeError = Error;
+        // Minifiers emit `Error()` for `new Error()`, so trap calls too.
+        window.Error = new Proxy(NativeError, {
+          construct(target, args, newTarget) {
+            window.__errors++;
+            return Reflect.construct(target, args, newTarget);
+          },
+          apply(target, thisArg, args) {
+            window.__errors++;
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+      }
+    </script>
+  </head>
+  <body>
+    <h1>foldkit: stack trace per <code>h.submodel</code> per render</h1>
+    <p>
+      Renders <code>rows × depth</code> nested <code>h.submodel</code> slots. Every render calls
+      <code>registerBoundaryWrap</code> → <code>captureCallSite()</code> →
+      <code>new Error().stack</code> once per slot, only to word the duplicate-slotId error.
+      Compare <a href="?">foldkit as published</a> with <a href="?patched=1">?patched=1</a>
+      (one call site per slot id, formatted only on error). The cost grows with call-stack
+      depth: <a href="?pad=150">?pad=150</a> vs <a href="?pad=150&amp;patched=1">?pad=150&amp;patched=1</a>.
+      <a href="?count=1">?count=1</a> counts <code>Error</code> constructions;
+      <a href="?duplicate=1">?duplicate=1</a> / <a href="?duplicate=1&amp;patched=1">with the fix</a>
+      shows the duplicate-slotId error.
+    </p>
+    <button id="bench">Run benchmark</button>
+    <pre id="results">Click "Run benchmark" (60 re-renders after 10 warm-up renders).</pre>
+    <div id="root"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
